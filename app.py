@@ -3,7 +3,7 @@ import psycopg2
 import random
 import json
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, List
 from psycopg2.extras import Json
 
@@ -491,36 +491,93 @@ def run_ai(user, intent, category, attach_gif, attach_poll):
     )
 
 
-def save_post_to_db(post: dict, show_public: bool):
+def save_post_to_db(post: dict, user_id: int, show_public: bool):
     conn = get_db()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO posts (
-                user_id,
-                category,
-                intent,
-                title,
-                description,
-                medias,
-                tags,
-                show_public
+
+    try:
+        with conn.cursor() as cur:
+            poll_id = None
+
+            # -------------------------------------------------
+            # 1️⃣ CREATE POLL (IF EXISTS)
+            # -------------------------------------------------
+            if post.get("poll"):
+                poll = post["poll"]
+
+                cur.execute(
+                    """
+                    INSERT INTO polls (
+                        type,
+                        status,
+                        question,
+                        ends_at,
+                        user_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        poll.get("type", "single"),
+                        "active",
+                        poll["question"],
+                        poll.get(
+                            "ends_at",
+                            datetime.now(timezone.utc) + timedelta(days=10),
+                        ),
+                        user_id,
+                    ),
+                )
+
+                poll_id = cur.fetchone()[0]
+
+                # ---- poll options ----
+                for opt in poll["options"]:
+                    cur.execute(
+                        """
+                        INSERT INTO poll_options (poll_id, text, vote_count)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (poll_id, opt, 0),
+                    )
+
+            # -------------------------------------------------
+            # 2️⃣ CREATE POST
+            # -------------------------------------------------
+            cur.execute(
+                """
+                INSERT INTO posts (
+                    user_id,
+                    category,
+                    intent,
+                    title,
+                    description,
+                    medias,
+                    tags,
+                    poll_id,
+                    show_public
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    post["category"],
+                    post["intent"],
+                    post["title"],
+                    post["description"],
+                    Json(post["medias"]) if post.get("medias") else None,
+                    post["tags"],
+                    poll_id,
+                    show_public,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                post["user_id"],
-                post["category"],
-                post["intent"],
-                post["title"],
-                post["description"],
-                Json(post["medias"]) if post.get("medias") else None,
-                post["tags"],  # ARRAY(String) → list is OK
-                show_public,
-            ),
-        )
-        conn.commit()
-    conn.close()
+
+            conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_intent_id(intent_name: str) -> int | None:
@@ -978,11 +1035,7 @@ with tabs[5]:
     if category == "Random":
         category = random.choice(CATEGORIES)
 
-    attach_poll = st.checkbox(
-        "Attach poll to this post",
-        value=False,
-    )
-
+    attach_poll = st.checkbox("Attach poll to this post", value=False)
     attach_gif = st.checkbox("Attach GIF", value=False)
 
     if st.button("✨ Generate Post"):
@@ -991,24 +1044,43 @@ with tabs[5]:
             st.session_state["generated_post"] = post
 
 
+# -------------------------------------------------
+# PREVIEW + SAVE
+# -------------------------------------------------
+
 if "generated_post" in st.session_state:
     post = st.session_state["generated_post"]
 
     st.markdown("### 📝 Preview")
     st.markdown(f"**Title:** {post['title']}")
     st.write(post["description"])
+    if post.get("poll"):
+        st.markdown("### 📊 Poll Preview")
+
+        poll = post["poll"]
+
+        st.write(f"**Question:** {poll['question']}")
+
+        for idx, opt in enumerate(poll["options"], start=1):
+            st.write(f"{idx}. {opt}")
+
+        st.caption(f"Poll type: {poll.get('type', 'single')}")
+
     if post.get("medias"):
         for media in post["medias"]:
             if media["type"] == "gif":
-                st.image(
-                    media["uri"],
-                    width=media.get("width", 240),
-                )
+                st.image(media["uri"], width=media.get("width", 240))
+
     st.caption(f"Intent: {post['intent']} | Category: {post['category']}")
 
     show_public = st.checkbox("Show public", value=False)
 
     if st.button("💾 Save to DB"):
-        save_post_to_db(post, show_public)
+        save_post_to_db(
+            post=post,
+            user_id=post["user_id"],
+            show_public=show_public,
+        )
         st.success("Post saved")
         del st.session_state["generated_post"]
+        st.rerun()

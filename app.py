@@ -650,19 +650,20 @@ with tabs[0]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (username, date_of_birth, gender, tone, typing_quirks. image_src)
+                    INSERT INTO users (username, date_of_birth, gender, tone, typing_quirks, image_src)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (username)
                     DO UPDATE SET
                         date_of_birth = EXCLUDED.date_of_birth,
                         gender = EXCLUDED.gender,
                         tone = EXCLUDED.tone,
-                        typing_quirks = EXCLUDED.typing_quirks
+                        typing_quirks = EXCLUDED.typing_quirks,
                         image_src = COALESCE(users.image_src, EXCLUDED.image_src)
                     """,
                     (username, dob, gender, tone, quirks, random_avatar),
                 )
                 conn.commit()
+                st.success("User saved")
             conn.close()
 
             st.success("User saved")

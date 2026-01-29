@@ -9,6 +9,8 @@ from typing import Dict, Any, List
 from openai import AsyncAzureOpenAI, APIError, RateLimitError
 from httpx import ReadTimeout
 
+from helper import PROFILE_IMAGES
+
 
 INTENTS = [
     "story",
@@ -623,7 +625,13 @@ with tabs[0]:
 
     # ---- INPUTS (SOURCE OF TRUTH) ----
     username = st.text_input("Username", value=uname)
-    dob = st.date_input("Date of birth", value=dob)
+    dob = st.date_input(
+        "Date of birth",
+        value=dob,
+        min_value=date(1950, 1, 1),
+        max_value=date.today(),
+    )
+
     gender = st.selectbox(
         "Gender",
         ["", "female", "male", "other"],
@@ -637,26 +645,28 @@ with tabs[0]:
         if not username or not tone or not quirks:
             st.error("Username, tone, and typing quirks are required")
         else:
+            random_avatar = random.choice(PROFILE_IMAGES)
             conn = get_db()
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (username, date_of_birth, gender, tone, typing_quirks)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO users (username, date_of_birth, gender, tone, typing_quirks. image_src)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (username)
                     DO UPDATE SET
                         date_of_birth = EXCLUDED.date_of_birth,
                         gender = EXCLUDED.gender,
                         tone = EXCLUDED.tone,
                         typing_quirks = EXCLUDED.typing_quirks
+                        image_src = COALESCE(users.image_src, EXCLUDED.image_src)
                     """,
-                    (username, dob, gender, tone, quirks),
+                    (username, dob, gender, tone, quirks, random_avatar),
                 )
                 conn.commit()
             conn.close()
 
             st.success("User saved")
-            st.experimental_rerun()
+            st.rerun()
 
 
 with tabs[1]:

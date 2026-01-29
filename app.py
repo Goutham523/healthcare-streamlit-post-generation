@@ -5,6 +5,7 @@ import json
 import asyncio
 from datetime import date
 from typing import Dict, Any, List
+from psycopg2.extras import Json
 
 from openai import AsyncAzureOpenAI, APIError, RateLimitError
 from httpx import ReadTimeout
@@ -418,7 +419,7 @@ Return JSON:
     }
 
 
-async def generate_ai_post(user, intent, category, attach_gif):
+async def generate_ai_post(user, intent, category, attach_gif, attach_poll):
     angles = fetch_angles(intent)
     angle = random.choice(angles) if angles else "general"
 
@@ -439,7 +440,7 @@ async def generate_ai_post(user, intent, category, attach_gif):
     description = await realize_language(blueprint, persona)
 
     poll = None
-    if should_attach_poll(random.randint(0, 9)):
+    if attach_poll:
         poll = await generate_value_poll(blueprint, category, intent)
 
     # media = None
@@ -484,42 +485,54 @@ async def generate_ai_post(user, intent, category, attach_gif):
     }
 
 
-def run_ai(user, intent, category, attach_gif):
-    return asyncio.run(generate_ai_post(user, intent, category, attach_gif))
+def run_ai(user, intent, category, attach_gif, attach_poll):
+    return asyncio.run(
+        generate_ai_post(user, intent, category, attach_gif, attach_poll)
+    )
 
 
-def save_post_to_db(post: Dict[str, Any], show_public: bool):
+def save_post_to_db(post: dict, show_public: bool):
     conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO posts (
-                    user_id,
-                    category,
-                    intent,
-                    title,
-                    description,
-                    tags,
-                    show_public,
-                    medias
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-                (
-                    post["user_id"],
-                    post["category"],
-                    post["intent"],
-                    post["title"],
-                    post["description"],
-                    post["tags"],
-                    show_public,
-                    post["medias"],
-                ),
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO posts (
+                user_id,
+                category,
+                intent,
+                title,
+                description,
+                medias,
+                tags,
+                show_public
             )
-            conn.commit()
-    finally:
-        conn.close()
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                post["user_id"],
+                post["category"],
+                post["intent"],
+                post["title"],
+                post["description"],
+                Json(post["medias"]) if post.get("medias") else None,
+                post["tags"],  # ARRAY(String) → list is OK
+                show_public,
+            ),
+        )
+        conn.commit()
+    conn.close()
+
+
+def get_intent_id(intent_name: str) -> int | None:
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM intents WHERE name = %s",
+            (intent_name,),
+        )
+        row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 
 def upsert_user(
@@ -646,56 +659,121 @@ with tabs[0]:
             st.error("Username, tone, and typing quirks are required")
         else:
             random_avatar = random.choice(PROFILE_IMAGES)
+
             conn = get_db()
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (username, date_of_birth, gender, tone, typing_quirks, image_src)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (username)
-                    DO UPDATE SET
-                        date_of_birth = EXCLUDED.date_of_birth,
-                        gender = EXCLUDED.gender,
-                        tone = EXCLUDED.tone,
-                        typing_quirks = EXCLUDED.typing_quirks,
-                        image_src = COALESCE(users.image_src, EXCLUDED.image_src)
-                    """,
-                    (username, dob, gender, tone, quirks, random_avatar),
+    INSERT INTO users (
+        username,
+        date_of_birth,
+        gender,
+        tone,
+        typing_quirks,
+        image_src,
+        account_type
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (username)
+    DO UPDATE SET
+        date_of_birth = EXCLUDED.date_of_birth,
+        gender = EXCLUDED.gender,
+        tone = EXCLUDED.tone,
+        typing_quirks = EXCLUDED.typing_quirks,
+        image_src = COALESCE(users.image_src, EXCLUDED.image_src),
+        account_type = COALESCE(users.account_type, EXCLUDED.account_type)
+    """,
+                    (
+                        username,
+                        dob,
+                        gender,
+                        tone,
+                        quirks,
+                        random_avatar,
+                        "user",
+                    ),
                 )
-                conn.commit()
-                st.success("User saved")
-            conn.close()
 
+                conn.commit()
+
+            conn.close()
             st.success("User saved")
             st.rerun()
 
 
-with tabs[1]:
-    st.subheader("Intent Angles")
+with tabs[1]:  # adjust index if needed
+    st.subheader("🧭 Angles")
 
-    intent = st.selectbox("Select intent", INTENTS)
-    angles = fetch_angles(intent)
+    # ---- Fetch intents ----
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT name FROM intents ORDER BY name")
+        intents = [r[0] for r in cur.fetchall()]
+    conn.close()
 
-    st.write("Existing angles:")
-    for a in angles:
-        st.code(a)
+    if not intents:
+        st.warning("No intents found")
+        st.stop()
 
+    selected_intent = st.selectbox("Select intent", intents)
+
+    intent_id = get_intent_id(selected_intent)
+    if not intent_id:
+        st.error("Invalid intent selected")
+        st.stop()
+
+    st.divider()
+
+    # ---- Show existing angles ----
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT angle
+            FROM intent_angles
+            WHERE intent_id = %s
+            ORDER BY angle
+            """,
+            (intent_id,),
+        )
+        angles = [r[0] for r in cur.fetchall()]
+    conn.close()
+
+    st.markdown("**Existing angles**")
+    if angles:
+        for a in angles:
+            st.write(f"• {a}")
+    else:
+        st.info("No angles yet for this intent")
+
+    st.divider()
+
+    # ---- Add new angle ----
     new_angle = st.text_input("Add new angle")
+
     if st.button("Add angle"):
-        if new_angle:
+        if not new_angle.strip():
+            st.error("Angle cannot be empty")
+        else:
             conn = get_db()
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO intent_angles (intent_id, angle)
-                    SELECT id, %s FROM intents WHERE name = %s
-                """,
-                    (new_angle, intent),
+                    VALUES (%s, %s)
+                    ON CONFLICT (intent_id, angle) DO NOTHING
+                    """,
+                    (intent_id, new_angle.strip()),
                 )
                 conn.commit()
+
+                if cur.rowcount == 0:
+                    st.warning("Angle already exists for this intent")
+                else:
+                    st.success("Angle added")
+
             conn.close()
-            st.success("Angle added")
-            st.experimental_rerun()
+            st.rerun()
 
 
 with tabs[2]:
@@ -732,7 +810,7 @@ with tabs[2]:
                 conn.commit()
             conn.close()
             st.success("Cognitive bias added")
-            st.experimental_rerun()
+            st.rerun()
 
     st.divider()
 
@@ -756,7 +834,7 @@ with tabs[2]:
                 conn.commit()
             conn.close()
             st.success("Bias deleted")
-            st.experimental_rerun()
+            st.rerun()
 
 
 with tabs[3]:
@@ -792,7 +870,7 @@ with tabs[3]:
                 conn.commit()
             conn.close()
             st.success("Mental state added")
-            st.experimental_rerun()
+            st.rerun()
 
     st.divider()
 
@@ -816,7 +894,7 @@ with tabs[3]:
                 conn.commit()
             conn.close()
             st.success("Mental state deleted")
-            st.experimental_rerun()
+            st.rerun()
 
 with tabs[4]:
     st.subheader("Vibe Profiles")
@@ -872,7 +950,7 @@ with tabs[4]:
             conn.commit()
         conn.close()
         st.success("Vibe profile saved")
-        st.experimental_rerun()
+        st.rerun()
 
 
 with tabs[5]:
@@ -900,11 +978,16 @@ with tabs[5]:
     if category == "Random":
         category = random.choice(CATEGORIES)
 
+    attach_poll = st.checkbox(
+        "Attach poll to this post",
+        value=False,
+    )
+
     attach_gif = st.checkbox("Attach GIF", value=False)
 
     if st.button("✨ Generate Post"):
         with st.spinner("Generating..."):
-            post = run_ai(user, intent, category, attach_gif)
+            post = run_ai(user, intent, category, attach_gif, attach_poll)
             st.session_state["generated_post"] = post
 
 

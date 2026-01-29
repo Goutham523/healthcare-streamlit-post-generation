@@ -23,15 +23,30 @@ INTENTS = [
 ]
 
 CATEGORIES = [
+    "Skin Care",
+    "Hair Care",
+    "Mental Health",
+    "Sexual Health",
     "Sex Education",
-    "Infertility",
-    "Parenting",
+    "Women’s Health",
     "Men’s Health",
     "PCOD",
-    "Hair Care",
+    "Periods",
+    "Pregnancy",
+    "Infertility",
+    "Parenting",
     "Heart Health",
-    "Sexual Health",
+    "Diabetes",
+    "Gut Health",
+    "Sleep",
+    "Stress",
+    "Anxiety",
+    "Depression",
     "Weight Loss",
+    "Fitness",
+    "Nutrition",
+    "Immunity",
+    "General Health",
 ]
 
 

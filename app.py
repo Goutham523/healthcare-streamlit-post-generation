@@ -1001,7 +1001,7 @@ with tabs[4]:
                 DO UPDATE SET
                     description = EXCLUDED.description,
                     emoji_chance = EXCLUDED.emoji_chance
-            """,
+                """,
                 (vibe_name, description, emoji_chance),
             )
             conn.commit()
